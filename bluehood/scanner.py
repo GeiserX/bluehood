@@ -148,6 +148,7 @@ class BluetoothScanner:
         self._mac_lookup: Optional[AsyncMacLookup] = None
         self._vendor_cache: dict[str, Optional[str]] = {}
         self._vendors_updated = False
+        self._http_session: Optional[aiohttp.ClientSession] = None
 
     async def _ensure_vendor_db(self) -> None:
         """Ensure vendor database is up to date."""
@@ -232,27 +233,28 @@ class BluetoothScanner:
 
         # Rate limit: 1 request per second
         if hasattr(self, '_last_api_call'):
-            elapsed = asyncio.get_event_loop().time() - self._last_api_call
+            elapsed = asyncio.get_running_loop().time() - self._last_api_call
             if elapsed < 1.0:
                 await asyncio.sleep(1.0 - elapsed)
 
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    f"{MACVENDORS_API_URL}{oui}",
-                    timeout=aiohttp.ClientTimeout(total=5)
-                ) as response:
-                    self._last_api_call = asyncio.get_event_loop().time()
-                    if response.status == 200:
-                        vendor = await response.text()
-                        return vendor.strip() if vendor else None
-                    elif response.status == 404:
-                        return None  # OUI not found in database
-                    elif response.status == 429:
-                        logger.debug("Vendor API rate limited")
-                        return None
-                    else:
-                        return None
+            if self._http_session is None or self._http_session.closed:
+                self._http_session = aiohttp.ClientSession()
+            async with self._http_session.get(
+                f"{MACVENDORS_API_URL}{oui}",
+                timeout=aiohttp.ClientTimeout(total=5)
+            ) as response:
+                self._last_api_call = asyncio.get_running_loop().time()
+                if response.status == 200:
+                    vendor = await response.text()
+                    return vendor.strip() if vendor else None
+                elif response.status == 404:
+                    return None  # OUI not found in database
+                elif response.status == 429:
+                    logger.debug("Vendor API rate limited")
+                    return None
+                else:
+                    return None
         except asyncio.TimeoutError:
             logger.debug(f"Vendor API timeout for {oui}")
             return None
